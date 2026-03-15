@@ -1,0 +1,50 @@
+services:
+  qdrant:
+    image: qdrant/qdrant
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  backend:
+    build:
+      context: ./backend
+    container_name: book-backend
+    depends_on:
+      qdrant:
+        condition: service_started
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: books
+      EMBEDDING_MODEL_NAME: intfloat/multilingual-e5-small
+      DEFAULT_CATALOG_PATH: /shared/data/books.json
+      UPLOAD_DIR: /shared/uploads
+    volumes:
+      - ./data:/shared/data
+      - uploads_data:/shared/uploads
+      - huggingface_cache:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: book-frontend
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "8501:8501"
+
+volumes:
+  qdrant_storage:
+  uploads_data:
+  huggingface_cache:
