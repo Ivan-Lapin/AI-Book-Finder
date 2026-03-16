@@ -30,7 +30,7 @@ class BookResult(BaseModel):
     title: str
     author: str
     category: str
-    year: int
+    year: int | str
     description: str
     score: float
     explanation: str
@@ -41,6 +41,7 @@ class SearchResponse(BaseModel):
     query: str
     normalized_query: str
     assistant_message: str
+    interpretation: QueryInterpretation | None = None
     results: List[BookResult]
 
 
@@ -50,4 +51,22 @@ class HealthResponse(BaseModel):
     vector_size: Optional[int] = None
     indexed_vectors: Optional[int] = None
     model: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    
+class QueryInterpretation(BaseModel):
+    normalized_query: str
+    query_type: str
+    keywords: list[str] = Field(default_factory=list)
+    genres: list[str] = Field(default_factory=list)
+    themes: list[str] = Field(default_factory=list)
+    moods: list[str] = Field(default_factory=list)
+
+
+class CatalogStatusResponse(BaseModel):
+    collection: str
+    collection_exists: bool
+    indexed_books: int
+    model: str
+    catalog_ready: bool
+    message: str
     details: dict[str, Any] = Field(default_factory=dict)

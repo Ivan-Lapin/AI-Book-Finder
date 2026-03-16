@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
-from io import BytesIO
-
 import requests
 import streamlit as st
+import time
 
 BACKEND_URL = "http://backend:8000"
 
@@ -25,6 +23,37 @@ def show_error(message: str) -> None:
     st.error(message, icon="🚨")
 
 
+def render_results(results: list[dict]) -> None:
+    for item in results:
+        with st.container(border=True):
+            st.markdown(f"### {item['title']}")
+            st.markdown(
+                f"**Автор:** {item['author']}  \n**Жанр:** {item['category']}  \n**Год:** {item['year']}  \n**Итоговый score:** {item['score']}"
+            )
+            st.write(item["description"])
+            st.caption(item["explanation"])
+            if item["matched_signals"]:
+                badges = " · ".join(item["matched_signals"])
+                st.write(f"**Совпавшие сигналы:** {badges}")
+                
+def fetch_backend_health(retries: int = 5, delay: float = 1.0):
+    last_error = None
+
+    for attempt in range(retries):
+        try:
+            response = requests.get(f"{BACKEND_URL}/healthz", timeout=3)
+            if response.ok:
+                return response.json(), None
+            last_error = f"HTTP {response.status_code}: {response.text}"
+        except requests.RequestException as exc:
+            last_error = str(exc)
+
+        if attempt < retries - 1:
+            time.sleep(delay)
+
+    return None, last_error
+
+
 with st.sidebar:
     st.subheader("Управление каталогом")
 
@@ -38,50 +67,67 @@ with st.sidebar:
             show_error(response.text)
 
     uploaded_file = st.file_uploader("Загрузить books.json", type=["json"])
-    if uploaded_file is not None:
-        if st.button("Загрузить и проиндексировать", use_container_width=True):
-            files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/json")}
-            response = requests.post(f"{BACKEND_URL}/catalog/upload", files=files, timeout=120)
-            if response.ok:
-                payload = response.json()
-                st.success(payload["message"])
-                st.json(payload)
-            else:
-                show_error(response.text)
+    if uploaded_file is not None and st.button("Загрузить и проиндексировать", use_container_width=True):
+        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/json")}
+        response = requests.post(f"{BACKEND_URL}/catalog/upload", files=files, timeout=120)
+        if response.ok:
+            payload = response.json()
+            st.success(payload["message"])
+            st.json(payload)
+        else:
+            show_error(response.text)
+
+    st.divider()
+    st.subheader("Что понимает поиск")
+    st.markdown(
+        "- жанр и формат произведения\n"
+        "- тему и исторический контекст\n"
+        "- настроение и атмосферу\n"
+        "- сюжетные сигналы и тип героя"
+    )
 
     st.divider()
     st.subheader("Состояние сервиса")
     try:
-        health_response = requests.get(f"{BACKEND_URL}/healthz", timeout=5)
-        if health_response.ok:
+        health_payload, health_error = fetch_backend_health()
+        status_response = requests.get(f"{BACKEND_URL}/catalog/status", timeout=5)
+
+        if health_payload is not None:
             st.success("Backend доступен")
-            st.json(health_response.json())
+            st.json(health_payload)
         else:
-            st.warning("Backend отвечает, но ещё не полностью готов")
+            st.info("Backend запускается…")
+        if status_response.ok:
+            payload = status_response.json()
+            if payload["catalog_ready"]:
+                st.success(payload["message"])
+            else:
+                st.info(payload["message"])
+            st.json(payload)
+        else:
+            show_error(status_response.text)
     except requests.RequestException:
-        st.warning("Backend ещё запускается. Обнови страницу через несколько секунд.")
+        st.info("Backend запускается…")
+        time.sleep(2)
+        st.rerun()
 
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if "interpretation" in message:
+            interpretation = message["interpretation"]
+            st.caption(
+                f"Интерпретация запроса: тип = {interpretation['query_type']}; "
+                f"темы = {', '.join(interpretation['themes']) or '—'}; "
+                f"жанры = {', '.join(interpretation['genres']) or '—'}; "
+                f"настроение = {', '.join(interpretation['moods']) or '—'}."
+            )
         if "results" in message:
-            for item in message["results"]:
-                with st.container(border=True):
-                    st.markdown(f"### {item['title']}")
-                    st.markdown(
-                        f"**Автор:** {item['author']}  | **Жанр:** {item['category']}  | **Год:** {item['year']}"
-                    )
-                    st.markdown(
-                        f"**Сходство:** {item['score']}"
-                    )
-                    st.write(item["description"])
-                    st.caption(item["explanation"])
-                    if item["matched_signals"]:
-                        st.write("Сигналы совпадения:", ", ".join(item["matched_signals"]))
+            render_results(message["results"])
 
 
-prompt = st.chat_input()
+prompt = st.chat_input("Например: историческая проза о революции в России")
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -95,33 +141,31 @@ if prompt:
         )
 
         if response.status_code >= 400:
-            error_text = f"Ошибка backend ({response.status_code}): {response.text}"
-            st.session_state.messages.append({"role": "assistant", "content": error_text})
-            with st.chat_message("assistant"):
-                show_error(error_text)
+            try:
+                error_payload = response.json()
+                detail = error_payload.get("detail", response.text)
+            except Exception:
+                detail = response.text
+
+            error_text = f"Ошибка backend ({response.status_code}): {detail}"
         else:
             payload = response.json()
             assistant_message = {
                 "role": "assistant",
                 "content": payload["assistant_message"],
                 "results": payload["results"],
+                "interpretation": payload["interpretation"],
             }
             st.session_state.messages.append(assistant_message)
             with st.chat_message("assistant"):
                 st.markdown(payload["assistant_message"])
-                for item in payload["results"]:
-                    with st.container(border=True):
-                        st.markdown(f"### {item['title']}")
-                        st.markdown(
-                            f"**Автор:** {item['author']}  | **Жанр:** {item['category']}  | **Год:** {item['year']}"
-                        )
-                        st.markdown(
-                            f"**Similarity score:** {item['score']}"
-                        )
-                        st.write(item["description"])
-                        st.caption(item["explanation"])
-                        if item["matched_signals"]:
-                            st.write("Сигналы совпадения:", ", ".join(item["matched_signals"]))
+                st.caption(
+                    f"Интерпретация запроса: тип = {payload['interpretation']['query_type']}; "
+                    f"темы = {', '.join(payload['interpretation']['themes']) or '—'}; "
+                    f"жанры = {', '.join(payload['interpretation']['genres']) or '—'}; "
+                    f"настроение = {', '.join(payload['interpretation']['moods']) or '—'}."
+                )
+                render_results(payload["results"])
     except requests.RequestException as exc:
         error_text = f"Ошибка поиска: {exc}"
         st.session_state.messages.append({"role": "assistant", "content": error_text})
